@@ -1,7 +1,10 @@
 package pfsense
 
 import (
+	"crypto/tls"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -10,11 +13,11 @@ import (
 )
 
 func init() {
-	caddy.RegisterModule(&Provider{})
+	caddy.RegisterModule(Provider{})
 }
 
 // CaddyModule returns the Caddy module information.
-func (*Provider) CaddyModule() caddy.ModuleInfo {
+func (Provider) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "dns.providers.pfsense",
 		New: func() caddy.Module { return &Provider{} },
@@ -27,14 +30,24 @@ func (p *Provider) Provision(ctx caddy.Context) error {
 
 	p.Host = strings.TrimSpace(repl.ReplaceAll(p.Host, ""))
 	p.APIKey = strings.TrimSpace(repl.ReplaceAll(p.APIKey, ""))
-	p.EntryDescription = strings.TrimSpace(repl.ReplaceAll(p.EntryDescription, ""))
+	p.Description = strings.TrimSpace(repl.ReplaceAll(p.Description, ""))
+
+	transport := &http.Transport{}
+	if p.Insecure {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+	}
+	p.client = &http.Client{
+		Transport: transport,
+		Timeout:   30 * time.Second,
+	}
+
 	p.Logger = ctx.Logger()
 
 	p.Logger.Info("pfSense DNS provider initialized")
 	p.Logger.Debug("pfSense DNS provider configuration",
 		zap.String("host", p.Host),
 		zap.Bool("insecure", p.Insecure),
-		zap.String("entry_description", p.EntryDescription),
+		zap.String("entry_description", p.Description),
 	)
 
 	return nil
@@ -81,7 +94,7 @@ func (p *Provider) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 			case "entry_description":
 				if d.NextArg() {
-					p.EntryDescription = d.Val()
+					p.Description = d.Val()
 				}
 				if d.NextArg() {
 					return d.ArgErr()

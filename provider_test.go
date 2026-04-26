@@ -140,7 +140,7 @@ func TestGetDescription(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := &Provider{EntryDescription: tt.description}
+			p := &Provider{Description: tt.description}
 			result := p.getDescription()
 			if result != tt.expected {
 				t.Errorf("getDescription() = %q, want %q", result, tt.expected)

@@ -30,10 +30,12 @@ type Provider struct {
 	APIKey string `json:"api_key,omitempty"`
 	// Insecure skips TLS certificate verification (for self-signed certificates)
 	Insecure bool `json:"insecure,omitempty"`
-	// EntryDescription is set on created host entries (defaults to "Managed by Caddy")
-	EntryDescription string `json:"entry_description,omitempty"`
+	// Description is set on created host entries (defaults to "Managed by Caddy")
+	Description string `json:"entry_description,omitempty"`
 	// Logger is an optional logger. When used with Caddy, set this to ctx.Logger() during Provision.
 	Logger *zap.Logger `json:"-"`
+
+	client *http.Client
 }
 
 type hostOverride struct {
@@ -79,6 +81,9 @@ type updateOverrideRequest struct {
 }
 
 func (p *Provider) getClient() *http.Client {
+	if p.client != nil {
+		return p.client
+	}
 	transport := &http.Transport{}
 	if p.Insecure {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
@@ -90,8 +95,8 @@ func (p *Provider) getClient() *http.Client {
 }
 
 func (p *Provider) getDescription() string {
-	if p.EntryDescription != "" {
-		return p.EntryDescription
+	if p.Description != "" {
+		return p.Description
 	}
 	return "Managed by Caddy"
 }
@@ -107,8 +112,8 @@ func (p *Provider) baseURL() string {
 	return "https://" + p.Host + "/api/v2/services/dns_resolver"
 }
 
-func (p *Provider) doRequest(ctx context.Context, method, url string, body io.Reader) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
+func (p *Provider) doRequest(ctx context.Context, method, endpoint string, body io.Reader) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, p.baseURL()+"/"+endpoint, body)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
@@ -137,7 +142,7 @@ func (p *Provider) doRequest(ctx context.Context, method, url string, body io.Re
 }
 
 func (p *Provider) listHostOverrides(ctx context.Context) ([]hostOverride, error) {
-	respBody, err := p.doRequest(ctx, http.MethodGet, p.baseURL()+"/host_overrides", nil)
+	respBody, err := p.doRequest(ctx, http.MethodGet, "host_overrides", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +168,7 @@ func (p *Provider) createHostOverride(ctx context.Context, host, domain string, 
 		return fmt.Errorf("marshaling request: %w", err)
 	}
 
-	respBody, err := p.doRequest(ctx, http.MethodPost, p.baseURL()+"/host_override", strings.NewReader(string(reqBody)))
+	respBody, err := p.doRequest(ctx, http.MethodPost, "host_override", strings.NewReader(string(reqBody)))
 	if err != nil {
 		return err
 	}
@@ -194,7 +199,7 @@ func (p *Provider) updateHostOverride(ctx context.Context, id int, host, domain 
 		return fmt.Errorf("marshaling request: %w", err)
 	}
 
-	respBody, err := p.doRequest(ctx, http.MethodPatch, p.baseURL()+"/host_override", strings.NewReader(string(reqBody)))
+	respBody, err := p.doRequest(ctx, http.MethodPatch, "host_override", strings.NewReader(string(reqBody)))
 	if err != nil {
 		return err
 	}
@@ -212,8 +217,7 @@ func (p *Provider) updateHostOverride(ctx context.Context, id int, host, domain 
 }
 
 func (p *Provider) deleteHostOverride(ctx context.Context, id int) error {
-	url := fmt.Sprintf("%s/host_override?id=%d", p.baseURL(), id)
-	respBody, err := p.doRequest(ctx, http.MethodDelete, url, nil)
+	respBody, err := p.doRequest(ctx, http.MethodDelete, fmt.Sprintf("host_override?id=%d", id), nil)
 	if err != nil {
 		return err
 	}
@@ -231,7 +235,7 @@ func (p *Provider) deleteHostOverride(ctx context.Context, id int) error {
 }
 
 func (p *Provider) applyChanges(ctx context.Context) error {
-	respBody, err := p.doRequest(ctx, http.MethodPost, p.baseURL()+"/apply", nil)
+	respBody, err := p.doRequest(ctx, http.MethodPost, "apply", nil)
 	if err != nil {
 		return err
 	}
@@ -293,6 +297,22 @@ func stringSlicesEqual(a, b []string) bool {
 	return true
 }
 
+// hostOverrideToRecord converts a hostOverride to a slice of libdns.Record, one per IP address.
+func hostOverrideToRecord(h hostOverride, name string) []libdns.Record {
+	var records []libdns.Record
+	for _, ipStr := range h.IP {
+		addr, err := netip.ParseAddr(ipStr)
+		if err != nil {
+			continue
+		}
+		records = append(records, libdns.Address{
+			Name: name,
+			IP:   addr,
+		})
+	}
+	return records
+}
+
 // GetRecords lists all the records in the zone.
 func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record, error) {
 	p.getLogger().Debug("getting records", zap.String("zone", zone))
@@ -318,16 +338,7 @@ func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record
 			continue // not part of this zone
 		}
 
-		for _, ipStr := range h.IP {
-			addr, err := netip.ParseAddr(ipStr)
-			if err != nil {
-				continue // skip invalid entries
-			}
-			records = append(records, libdns.Address{
-				Name: name,
-				IP:   addr,
-			})
-		}
+		records = append(records, hostOverrideToRecord(h, name)...)
 	}
 
 	p.getLogger().Debug("finished getting records",

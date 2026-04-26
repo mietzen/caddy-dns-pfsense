@@ -16,7 +16,6 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/libdns/libdns"
@@ -35,9 +34,6 @@ type Provider struct {
 	EntryDescription string `json:"entry_description,omitempty"`
 	// Logger is an optional logger. When used with Caddy, set this to ctx.Logger() during Provision.
 	Logger *zap.Logger `json:"-"`
-
-	client     *http.Client
-	clientOnce sync.Once
 }
 
 type hostOverride struct {
@@ -83,17 +79,14 @@ type updateOverrideRequest struct {
 }
 
 func (p *Provider) getClient() *http.Client {
-	p.clientOnce.Do(func() {
-		transport := &http.Transport{}
-		if p.Insecure {
-			transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
-		}
-		p.client = &http.Client{
-			Transport: transport,
-			Timeout:   30 * time.Second,
-		}
-	})
-	return p.client
+	transport := &http.Transport{}
+	if p.Insecure {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   30 * time.Second,
+	}
 }
 
 func (p *Provider) getDescription() string {

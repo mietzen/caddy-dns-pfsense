@@ -1,0 +1,146 @@
+name: Build & Test
+
+on:
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+env:
+  GO_VERSION: "1.25"
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ hashFiles('**/go.sum') }}
+
+      - name: Download dependencies
+        run: go mod tidy
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          args: --timeout=5m
+
+      - name: Build Caddy with modules
+        run: |
+          go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+          xcaddy build \
+              --with github.com/mietzen/caddy-dns-pfsense=. \
+              --with github.com/mholt/caddy-dynamicdns
+
+      - name: Build test tools
+        run: |
+          go build -o test_assets/mock_pfsense ./test_assets/mock_server
+          go build -o test_assets/validate_requests ./test_assets/validator
+
+      - name: Integration test - pfSense
+        run: |
+          echo "Starting mock pfSense API server..."
+          ./test_assets/mock_pfsense -port 8443 -log test_assets/requests_pfsense.json &
+          MOCK_PID=$!
+          sleep 1
+
+          echo "Starting Caddy with pfSense config..."
+          PFSENSE_HOST=localhost:8443 \
+          PFSENSE_API_KEY=test-api-key \
+          ./caddy run --config test_assets/Caddyfile &
+          CADDY_PID=$!
+
+          echo "Waiting for dynamic DNS update cycle..."
+          sleep 5
+
+          echo "Stopping Caddy..."
+          kill $CADDY_PID 2>/dev/null || true
+          sleep 1
+
+          echo "Stopping mock server..."
+          kill $MOCK_PID 2>/dev/null || true
+
+          echo "Validating requests..."
+          ./test_assets/validate_requests -log test_assets/requests_pfsense.json
+
+      - name: Integration test - env placeholders
+        run: |
+          echo "Starting mock pfSense API server for env placeholder test..."
+          ./test_assets/mock_pfsense -port 8443 -log test_assets/requests_env.json &
+          MOCK_PID=$!
+          sleep 1
+
+          echo "Starting Caddy with env placeholder config..."
+          PFSENSE_HOST=localhost:8443 \
+          PFSENSE_API_KEY=test-api-key \
+          ./caddy run --config test_assets/Caddyfile.env &
+          CADDY_PID=$!
+
+          echo "Waiting for dynamic DNS update cycle..."
+          sleep 5
+
+          echo "Stopping Caddy..."
+          kill $CADDY_PID 2>/dev/null || true
+          sleep 1
+
+          echo "Stopping mock server..."
+          kill $MOCK_PID 2>/dev/null || true
+
+          echo "Validating requests..."
+          ./test_assets/validate_requests -log test_assets/requests_env.json
+
+      - name: Integration test - file placeholders
+        run: |
+          echo "Creating secret file..."
+          echo -n "test-api-key" > /tmp/pfsense_api_key
+
+          echo "Starting mock pfSense API server for file placeholder test..."
+          ./test_assets/mock_pfsense -port 8443 -log test_assets/requests_file.json &
+          MOCK_PID=$!
+          sleep 1
+
+          echo "Starting Caddy with file placeholder config..."
+          PFSENSE_HOST=localhost:8443 \
+          ./caddy run --config test_assets/Caddyfile.file &
+          CADDY_PID=$!
+
+          echo "Waiting for dynamic DNS update cycle..."
+          sleep 5
+
+          echo "Stopping Caddy..."
+          kill $CADDY_PID 2>/dev/null || true
+          sleep 1
+
+          echo "Stopping mock server..."
+          kill $MOCK_PID 2>/dev/null || true
+
+          echo "Cleaning up secret file..."
+          rm -f /tmp/pfsense_api_key
+
+          echo "Validating requests..."
+          ./test_assets/validate_requests -log test_assets/requests_file.json
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: test-logs
+          path: |
+            test_assets/requests_pfsense.json
+            test_assets/requests_env.json
+            test_assets/requests_file.json

@@ -1,0 +1,21 @@
+{
+	auto_https off
+	dynamic_dns {
+		provider pfsense {
+			host {env.PFSENSE_HOST}
+			api_key {env.PFSENSE_API_KEY}
+			insecure true
+			entry_description "Managed by Caddy Test"
+		}
+		domains {
+			example.com test
+		}
+		ip_source static 192.168.42.23
+		check_interval 1s
+		ttl 1h
+	}
+}
+
+http://test.example.com:8080 {
+	respond "Caddy pfSense main Caddyfile test server"
+}

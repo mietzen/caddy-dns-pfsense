@@ -1,0 +1,16 @@
+.DS_Store
+.env
+acme/*
+caddy
+/Caddyfile
+certificates/*
+conf.d/*
+last_clean.json
+buildenv_*
+locks/*
+test_assets/validate_requests
+test_assets/mock_*
+!test_assets/mock_server/
+test_assets/requests_*.json
+test_assets/Caddyfile.*.test
+dynamic_dns/managed_domains.json
